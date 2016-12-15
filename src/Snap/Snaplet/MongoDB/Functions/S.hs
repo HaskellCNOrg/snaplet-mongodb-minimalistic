@@ -14,12 +14,16 @@ module Snap.Snaplet.MongoDB.Functions.S
 , unsafeWithDB'
 ) where
 
+import Control.Monad.IO.Class
+import Control.Monad.State.Class
+import Control.Monad
 import           Control.Monad.Error (runErrorT)
 import           Snap
 import           Snap.Snaplet.MongoDB.Core
 
 import           Database.MongoDB (Action, AccessMode, Failure (ConnectionFailure), access)
-import           System.IO.Pool (aResource)
+import Data.Pool
+--import           System.IO.Pool (aResource)
 
 ------------------------------------------------------------------------------
 -- | Database access function.
@@ -94,10 +98,13 @@ eitherWithDB' :: (MonadIO m, MonadState app m, HasMongoDB app)
               -> m (Either Failure a)   -- ^ 'Either' 'Failure' or the action's result.
 eitherWithDB' mode action = do
     (MongoDB pool database _) <- gets getMongoDB
-    ep <- liftIO $ runErrorT $ aResource pool
-    case ep of
-         Left  err -> return $ Left $ ConnectionFailure err
-         Right pip -> liftIO $ access pip mode database action
+    r <- tryWithResource pool (\pip -> access pip mode database action)
+    case r of
+      Just a -> return $ Right a
+      Nothing -> return $ Left $ ConnectionFailure "can not find pool resource"
+    --case ep of
+         --Left  err -> return $ Left $ ConnectionFailure err
+         --Right pip -> liftIO $
 
 getMongoAccessMode :: (MonadIO m, MonadState app m, HasMongoDB app) => m AccessMode
 getMongoAccessMode = mongoAccessMode `liftM` gets getMongoDB
