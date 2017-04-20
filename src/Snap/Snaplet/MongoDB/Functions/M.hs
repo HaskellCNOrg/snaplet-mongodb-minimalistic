@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings     #-}
+{-# LANGUAGE FlexibleContexts     #-}
 
 ------------------------------------------------------------------------------
 -- | In this module you can find variations of @withDB@ functions.
@@ -12,17 +13,19 @@ module Snap.Snaplet.MongoDB.Functions.M
 , maybeWithDB'
 , unsafeWithDB
 , unsafeWithDB'
-) where 
+) where
 
-import           Control.Monad (liftM)
-import           Control.Monad.Error (runErrorT)
+import Control.Monad.IO.Class
+import Control.Monad.State.Class
+import Control.Monad
 import           Control.Lens (cloneLens, use)
 
-import           Snap (MonadIO, MonadState, liftIO, SnapletLens, snapletValue)
+import           Snap (SnapletLens, snapletValue)
 import           Snap.Snaplet.MongoDB.Core
 
 import           Database.MongoDB (Action, AccessMode, Failure (ConnectionFailure), access)
-import           System.IO.Pool (aResource)
+import Data.Pool
+import Control.Monad.Trans.Control
 
 ------------------------------------------------------------------------------
 -- | Database access function.
@@ -30,9 +33,9 @@ import           System.IO.Pool (aResource)
 -- Example:
 --
 -- > unsafeWithDB accountDB $ insert "test-collection" [ "some_field" = "something" ]
-unsafeWithDB :: (MonadIO m, MonadState app m)
+unsafeWithDB :: (MonadIO m, MonadState app m, MonadBaseControl IO m)
              => SnapletLens app MongoDB -- ^ The snaplet (database) on which you want the action to be run.
-             -> Action IO a             -- ^ 'Action' you want to perform.
+             -> Action m a             -- ^ 'Action' you want to perform.
              -> m a                     -- ^ The action's result; in case of failure 'error' is called.
 unsafeWithDB snaplet action = getMongoAccessMode snaplet >>= flip (unsafeWithDB' snaplet) action
 
@@ -42,10 +45,10 @@ unsafeWithDB snaplet action = getMongoAccessMode snaplet >>= flip (unsafeWithDB'
 -- Example:
 --
 -- > unsafeWithDB' accountDB UnconfirmedWrites $ insert "test-collection" [ "some_field" = "something" ]
-unsafeWithDB' :: (MonadIO m, MonadState app m)
+unsafeWithDB' :: (MonadIO m, MonadState app m, MonadBaseControl IO m)
               => SnapletLens app MongoDB -- ^ The snaplet (database) on which you want the action to be run.
               -> AccessMode              -- ^ Access mode you want to use when performing the action.
-              -> Action IO a             -- ^ 'Action' you want to perform.
+              -> Action m a             -- ^ 'Action' you want to perform.
               -> m a                     -- ^ The action's result; in case of failure 'error' is called.
 unsafeWithDB' snaplet mode action = do
     res <- eitherWithDB' snaplet mode action
@@ -57,9 +60,9 @@ unsafeWithDB' snaplet mode action = do
 -- Example:
 --
 -- > maybeWithDB accountDB $ insert "test-collection" [ "some_field" = "something" ]
-maybeWithDB :: (MonadIO m, MonadState app m)
+maybeWithDB :: (MonadIO m, MonadState app m, MonadBaseControl IO m)
             => SnapletLens app MongoDB -- ^ The snaplet (database) on which you want the action to be run.
-            -> Action IO a             -- ^ 'Action' you want to perform.
+            -> Action m a             -- ^ 'Action' you want to perform.
             -> m (Maybe a)             -- ^ 'Nothing' in case of failure or 'Just' the result of the action.
 maybeWithDB snaplet action = getMongoAccessMode snaplet >>= flip (maybeWithDB' snaplet) action
 
@@ -69,10 +72,10 @@ maybeWithDB snaplet action = getMongoAccessMode snaplet >>= flip (maybeWithDB' s
 -- Example:
 --
 -- > maybeWithDB' accountDB UnconfirmedWrites $ insert "test-collection" [ "some_field" = "something" ]
-maybeWithDB' :: (MonadIO m, MonadState app m)
+maybeWithDB' :: (MonadIO m, MonadState app m, MonadBaseControl IO m)
              => SnapletLens app MongoDB -- ^ The snaplet (database) on which you want the action to be run.
              -> AccessMode              -- ^ Access mode you want to use when performing the action.
-             -> Action IO a             -- ^ 'Action' you want to perform.
+             -> Action m a             -- ^ 'Action' you want to perform.
              -> m (Maybe a)             -- ^ 'Nothing' in case of failure or 'Just' the result of the action.
 maybeWithDB' snaplet mode action = do
     res <- eitherWithDB' snaplet mode action
@@ -84,9 +87,9 @@ maybeWithDB' snaplet mode action = do
 -- Example:
 --
 -- > eitherWithDB accountDB $ insert "test-collection" [ "some_field" = "something" ]
-eitherWithDB :: (MonadIO m, MonadState app m)
+eitherWithDB :: (MonadIO m, MonadState app m, MonadBaseControl IO m)
              => SnapletLens app MongoDB -- ^ The snaplet (database) on which you want the action to be run.
-             -> Action IO a             -- ^ 'Action' you want to perform.
+             -> Action m a             -- ^ 'Action' you want to perform.
              -> m (Either Failure a)    -- ^ 'Either' 'Failure' or the action's result.
 eitherWithDB snaplet action = getMongoAccessMode snaplet >>= flip (eitherWithDB' snaplet) action
 
@@ -96,17 +99,17 @@ eitherWithDB snaplet action = getMongoAccessMode snaplet >>= flip (eitherWithDB'
 -- Example:
 --
 -- > eitherWithDB' accountDB UnconfirmedWrites $ insert "test-collection" [ "some_field" = "something" ]
-eitherWithDB' :: (MonadIO m, MonadState app m)
+eitherWithDB' :: (MonadIO m, MonadState app m, MonadBaseControl IO m)
               => SnapletLens app MongoDB -- ^ The snaplet (database) on which you want the action to be run.
               -> AccessMode              -- ^ Access mode you want to use when performing the action.
-              -> Action IO a             -- ^ 'Action' you want to perform.
+              -> Action m a             -- ^ 'Action' you want to perform.
               -> m (Either Failure a)    -- ^ 'Either' 'Failure' or the action's result.
 eitherWithDB' snaplet mode action = do
     (MongoDB pool database _) <- use (cloneLens snaplet . snapletValue)
-    ep <- liftIO $ runErrorT $ aResource pool
-    case ep of
-         Left  err -> return $ Left $ ConnectionFailure err
-         Right pip -> liftIO $ access pip mode database action
+    r <- tryWithResource pool (\pip -> access pip mode database action)
+    case r of
+      Just a -> return $ Right a
+      Nothing -> return $ Left $ ConnectionFailure $ userError "can not find pool resource"
 
 getMongoAccessMode :: (MonadIO m, MonadState app m) => SnapletLens app MongoDB -> m AccessMode
 getMongoAccessMode snaplet = mongoAccessMode `liftM` use (cloneLens snaplet . snapletValue)

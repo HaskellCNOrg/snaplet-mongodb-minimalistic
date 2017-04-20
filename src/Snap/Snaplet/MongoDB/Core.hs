@@ -15,7 +15,8 @@ import           Data.Text (Text)
 import           Snap.Snaplet
 import           Control.Monad.IO.Class
 import           Database.MongoDB (Database, Host, Pipe, AccessMode (UnconfirmedWrites), close, isClosed, connect)
-import           System.IO.Pool (Pool, Factory (Factory), newPool)
+import           Data.Pool(Pool, createPool)
+--import           System.IO.Pool (Pool, Factory (Factory), newPool)
 
 ------------------------------------------------------------------------------
 
@@ -26,23 +27,23 @@ description = "Minimalistic MongoDB Snaplet."
 
 ------------------------------------------------------------------------------
 -- | MongoDB Pool type
-type MongoDBPool = Pool IOError Pipe
+type MongoDBPool = Pool Pipe
 
 ------------------------------------------------------------------------------
 -- | Snaplet's data type.
 --
 -- Usage:
--- 
+--
 -- > data App = App
 -- >     { _heist :: Snaplet (Heist App)
 -- >     , _database :: Snaplet MongoDB
 -- >     }
 data MongoDB = MongoDB
-    { mongoPool :: Pool IOError Pipe
+    { mongoPool :: MongoDBPool
     , mongoDatabase :: Database
     , mongoAccessMode :: AccessMode
     }
-    
+
 ------------------------------------------------------------------------------
 -- | Snaplet's type-class.
 --
@@ -68,7 +69,7 @@ mongoDBInit :: Int                      -- ^ Maximum pool size.
             -> Database                 -- ^ Database name.
             -> SnapletInit app MongoDB
 mongoDBInit n h d = makeSnaplet "snaplet-mongodb" description Nothing $ do
-    pool <- liftIO $ newPool (Factory (connect h) close isClosed) n
+    pool <- liftIO $ createPool (connect h) close 1 10 n
     return $ MongoDB pool d UnconfirmedWrites
 
 ------------------------------------------------------------------------------
@@ -87,6 +88,5 @@ mongoDBInit' :: Int                      -- ^ Maximum pool size.
              -> AccessMode               -- ^ Default access mode to be used with this snaplet.
              -> SnapletInit app MongoDB
 mongoDBInit' n h d m = makeSnaplet "snaplet-mongodb" description Nothing $ do
-    pool <- liftIO $ newPool (Factory (connect h) close isClosed) n
+    pool <- liftIO $ createPool (connect h) close 1 10 n
     return $ MongoDB pool d m
-    
